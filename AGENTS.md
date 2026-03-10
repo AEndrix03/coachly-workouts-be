@@ -3,10 +3,11 @@
 ## Project Structure & Module Organization
 This service is a single-module Spring Boot backend for workouts.
 
-- `src/main/java/it/aredegalli/coachly/workout/`: application code (`controller`, `service`, `repository`, `model`, `mapper`).
+- `src/main/java/it/aredegalli/coachly/workout/`: application code (`controller`, `service`, `repository`, `model`, `mapper`, `dto`).
 - `src/main/resources/`: runtime configuration (`application.yaml`).
 - `src/test/java/it/aredegalli/coachly/workout/`: tests.
 - `docs/architecture/` and `docs/flows/`: technical design and workflow notes.
+- `.serena/project.yml` and `.serena/memories/`: SerenaMCP project metadata and onboarding memory.
 - `schema.sql`: PostgreSQL schema and enums (shared catalog/domain references).
 
 Keep production/test package structures aligned.
@@ -39,6 +40,7 @@ Use Maven Wrapper from repo root:
 - Always use SerenaMCP as primary workflow:
   - activate project and verify onboarding state at session start;
   - use Serena tools for discovery/navigation before edits.
+- Treat `.serena/project.yml` as the Serena project descriptor for this repository.
 - Always read relevant files under `docs/` before implementation.
 - Always update `docs/` when architecture, mapping, contracts, or workflows change.
 - Always create a commit at the end of each requested implementation step unless explicitly told not to.

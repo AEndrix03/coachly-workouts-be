@@ -1,72 +1,58 @@
 -- ============================================================
--- Exercise Catalog Service (v2) - Simplified, read-optimized
+-- Workout Service (v1) - Offline-first, simple schema
 -- PostgreSQL 13+
--- Changes from v1:
---   - exercise_instruction removed → merged into translations JSONB
---   - exercise_safety removed → inlined into exercise table
---   - category tree flattened (parent_id removed for MVP)
---   - exercise_variation kept (optional, populate when ready)
+-- Schema: workout
+--
+-- Design principles:
+--   - Client generates all UUIDs → upsert is idempotent
+--   - workout_session saved as a complete object (sync model)
+--   - session detail stored as JSONB (arrives whole, no partial updates)
+--   - Multilingua only on workout title/description (JSONB)
+--   - exercise_id is an opaque external ref to catalog-service
+--   - user_id is an opaque external ref to user-profile-be
 -- ============================================================
 
--- ---------- Extensions ----------
-CREATE EXTENSION IF NOT EXISTS pgcrypto;  -- gen_random_uuid()
-CREATE EXTENSION IF NOT EXISTS pg_trgm;   -- trigram indexes for ILIKE search
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
 
--- ---------- Schema ----------
-CREATE SCHEMA IF NOT EXISTS exercises;
-COMMENT ON SCHEMA exercises IS
-    'Exercise catalog schema (microservice). Contains master-data for exercises '
-        'and related dictionaries (muscles, equipment, tags, categories) plus media and relations.';
+CREATE SCHEMA IF NOT EXISTS workout;
+COMMENT ON SCHEMA workout IS
+    'Workout service schema. Manages workout templates (schema) and '
+        'executed sessions (offline-first, synced as complete objects).';
 
 -- ============================================================
--- ENUMs: stable domains
+-- ENUMs
 -- ============================================================
 
 DO $$
     BEGIN
         IF NOT EXISTS (SELECT 1 FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace
-                       WHERE n.nspname = 'exercises' AND t.typname = 'difficulty_level') THEN
-            CREATE TYPE exercises.difficulty_level AS ENUM ('beginner', 'intermediate', 'advanced');
+                       WHERE n.nspname = 'workout' AND t.typname = 'workout_status') THEN
+            CREATE TYPE workout.workout_status AS ENUM ('draft', 'active', 'archived');
         END IF;
 
         IF NOT EXISTS (SELECT 1 FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace
-                       WHERE n.nspname = 'exercises' AND t.typname = 'mechanics_type') THEN
-            CREATE TYPE exercises.mechanics_type AS ENUM ('compound', 'isolation');
+                       WHERE n.nspname = 'workout' AND t.typname = 'session_status') THEN
+            CREATE TYPE workout.session_status AS ENUM ('in_progress', 'completed', 'abandoned');
         END IF;
 
         IF NOT EXISTS (SELECT 1 FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace
-                       WHERE n.nspname = 'exercises' AND t.typname = 'force_type') THEN
-            CREATE TYPE exercises.force_type AS ENUM ('push', 'pull', 'static', 'carry');
+                       WHERE n.nspname = 'workout' AND t.typname = 'set_type') THEN
+            CREATE TYPE workout.set_type AS ENUM (
+                'normal',       -- serie standard
+                'warmup',       -- riscaldamento
+                'approach',     -- avvicinamento al carico
+                'dropset',      -- riduzione carico senza riposo
+                'cluster',      -- microriposi intra-serie
+                'failure',      -- portata a cedimento
+                'rest_pause',   -- riposo breve + ulteriori reps
+                'amrap'         -- as many reps as possible
+                );
         END IF;
 
         IF NOT EXISTS (SELECT 1 FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace
-                       WHERE n.nspname = 'exercises' AND t.typname = 'visibility') THEN
-            CREATE TYPE exercises.visibility AS ENUM ('public', 'private', 'unlisted');
-        END IF;
-
-        IF NOT EXISTS (SELECT 1 FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace
-                       WHERE n.nspname = 'exercises' AND t.typname = 'record_status') THEN
-            CREATE TYPE exercises.record_status AS ENUM ('active', 'archived');
-        END IF;
-
-        IF NOT EXISTS (SELECT 1 FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace
-                       WHERE n.nspname = 'exercises' AND t.typname = 'involvement_level') THEN
-            CREATE TYPE exercises.involvement_level AS ENUM ('primary', 'secondary', 'stabilizer');
-        END IF;
-
-        IF NOT EXISTS (SELECT 1 FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace
-                       WHERE n.nspname = 'exercises' AND t.typname = 'media_type') THEN
-            CREATE TYPE exercises.media_type AS ENUM ('image', 'video');
-        END IF;
-
-        IF NOT EXISTS (SELECT 1 FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace
-                       WHERE n.nspname = 'exercises' AND t.typname = 'media_purpose') THEN
-            CREATE TYPE exercises.media_purpose AS ENUM ('demo', 'tutorial', 'form_check', 'other');
-        END IF;
-
-        IF NOT EXISTS (SELECT 1 FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace
-                       WHERE n.nspname = 'exercises' AND t.typname = 'risk_level') THEN
-            CREATE TYPE exercises.risk_level AS ENUM ('low', 'medium', 'high');
+                       WHERE n.nspname = 'workout' AND t.typname = 'load_unit') THEN
+            CREATE TYPE workout.load_unit AS ENUM ('kg', 'lbs', 'bodyweight', 'band', 'machine_notch');
         END IF;
     END$$;
 
@@ -74,7 +60,7 @@ DO $$
 -- Utility: updated_at trigger
 -- ============================================================
 
-CREATE OR REPLACE FUNCTION exercises.tg_set_updated_at()
+CREATE OR REPLACE FUNCTION workout.tg_set_updated_at()
     RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN
     NEW.updated_at := NOW();
@@ -82,514 +68,370 @@ BEGIN
 END;
 $$;
 
-COMMENT ON FUNCTION exercises.tg_set_updated_at() IS
-    'Sets updated_at to now() on every UPDATE.';
-
 -- ============================================================
--- Core table: exercise
+-- Table: workout
 -- ============================================================
--- translations JSONB structure (per language key, e.g. "it", "en"):
+-- The "schema" / template created by the user.
+-- Multilingua on title and description via JSONB (same pattern
+-- as exercise catalog). Canonical title in the 'name' column
+-- for fast search; translations for localized display.
+--
+-- translations JSONB structure:
 -- {
---   "it": {
---     "name":             "Panca Piana",
---     "description":      "Esercizio compound...",
---     "safety_notes":     "Usa il rack di sicurezza...",
---     "instructions": {
---       "setup":           ["Regola la panca", "..."],
---       "execution":       ["Abbassa controllato", "..."],
---       "breathing":       ["Inspira scendendo", "..."],
---       "common_mistakes": ["Non rimbalzare il bilanciere"],
---       "tips":            ["Piedi piatti a terra"]
---     }
---   },
---   "en": { ... }
+--   "it": { "title": "...", "description": "..." },
+--   "en": { "title": "...", "description": "..." }
 -- }
 -- ============================================================
 
-CREATE TABLE IF NOT EXISTS exercises.exercise (
-                                                  id                  UUID             PRIMARY KEY DEFAULT gen_random_uuid(),
+CREATE TABLE IF NOT EXISTS workout.workout (
+                                               id              UUID            PRIMARY KEY,  -- generated by client
 
-    -- Canonical name (EN recommended). Used for indexing, search, semantic ops.
-                                                  name                VARCHAR(255)     NOT NULL,
+                                               user_id         UUID            NOT NULL,     -- opaque ref to user-profile-be
+                                               name            VARCHAR(255)    NOT NULL,      -- canonical (fallback) title, always present
+                                               translations    JSONB           NOT NULL DEFAULT '{}',
 
-    -- Filterable attributes (columns for index efficiency)
-                                                  difficulty          exercises.difficulty_level  NOT NULL,
-                                                  mechanics           exercises.mechanics_type    NOT NULL,
-                                                  force               exercises.force_type,
-                                                  unilateral          BOOLEAN          NOT NULL DEFAULT FALSE,
-                                                  bodyweight          BOOLEAN          NOT NULL DEFAULT FALSE,
+                                               status          workout.workout_status  NOT NULL DEFAULT 'active',
+                                               deleted_at      TIMESTAMPTZ,                  -- soft delete
 
-    -- Safety (inlined from v1 exercise_safety — always present, no join needed)
-                                                  overall_risk        exercises.risk_level  NOT NULL DEFAULT 'low',
-                                                  spotter_required    BOOLEAN          NOT NULL DEFAULT FALSE,
+                                               created_at      TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
+                                               updated_at      TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
 
-    -- Ownership & visibility
-                                                  owner_user_id       UUID,            -- NULL = system/global exercise
-                                                  visibility          exercises.visibility  NOT NULL DEFAULT 'public',
-                                                  status              exercises.record_status NOT NULL DEFAULT 'active',
-                                                  deleted_at          TIMESTAMPTZ,     -- soft delete
-
-    -- All translatable content (name, description, safety_notes, instructions by type)
-                                                  translations        JSONB            NOT NULL DEFAULT '{}',
-
-                                                  created_at          TIMESTAMPTZ      NOT NULL DEFAULT NOW(),
-                                                  updated_at          TIMESTAMPTZ      NOT NULL DEFAULT NOW(),
-
-                                                  CONSTRAINT chk_exercise_name_nonempty
-                                                      CHECK (LENGTH(TRIM(name)) > 0),
-                                                  CONSTRAINT chk_exercise_deleted_at
-                                                      CHECK (deleted_at IS NULL OR deleted_at <= NOW())
+                                               CONSTRAINT chk_workout_name_nonempty CHECK (LENGTH(TRIM(name)) > 0)
 );
 
-COMMENT ON TABLE  exercises.exercise IS
-    'Exercise master record. Filterable attributes as columns; all translatable '
-        'text (name, description, instructions, safety_notes) in translations JSONB.';
-COMMENT ON COLUMN exercises.exercise.name IS
-    'Canonical name in English. Always present; used for fast search and semantic matching.';
-COMMENT ON COLUMN exercises.exercise.overall_risk IS
-    'Coarse risk classification (inlined for simplicity).';
-COMMENT ON COLUMN exercises.exercise.spotter_required IS
-    'Whether a spotter is required for safe execution.';
-COMMENT ON COLUMN exercises.exercise.translations IS
-    'Per-language content. Keys: name, description, safety_notes, instructions '
-        '(object with setup/execution/breathing/common_mistakes/tips arrays).';
-COMMENT ON COLUMN exercises.exercise.owner_user_id IS
-    'External reference to the user who created a custom exercise; NULL = system record.';
-COMMENT ON COLUMN exercises.exercise.deleted_at IS
-    'Soft delete timestamp. Treat non-null as deleted.';
+COMMENT ON TABLE  workout.workout IS
+    'Workout template created by a user. Contains blocks and sets as child rows. '
+        'Multilingua on title/description via translations JSONB.';
+COMMENT ON COLUMN workout.workout.id IS
+    'UUID generated by the client. Enables offline creation and idempotent sync.';
+COMMENT ON COLUMN workout.workout.user_id IS
+    'Opaque external reference to user-profile-be. No FK by design (cross-service).';
+COMMENT ON COLUMN workout.workout.name IS
+    'Canonical title (fallback). Always present, used for search.';
+COMMENT ON COLUMN workout.workout.translations IS
+    'Per-language title and description: {"it": {"title": "...", "description": "..."}, ...}';
 
-CREATE TRIGGER trg_exercise_set_updated_at
-    BEFORE UPDATE ON exercises.exercise
-    FOR EACH ROW EXECUTE FUNCTION exercises.tg_set_updated_at();
+CREATE TRIGGER trg_workout_set_updated_at
+    BEFORE UPDATE ON workout.workout
+    FOR EACH ROW EXECUTE FUNCTION workout.tg_set_updated_at();
 
--- Indexes
-CREATE INDEX IF NOT EXISTS idx_exercise_filters
-    ON exercises.exercise (difficulty, mechanics, force)
+CREATE INDEX IF NOT EXISTS idx_workout_user
+    ON workout.workout (user_id)
     WHERE deleted_at IS NULL;
 
-CREATE INDEX IF NOT EXISTS idx_exercise_flags
-    ON exercises.exercise (unilateral, bodyweight)
-    WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_workout_name_trgm
+    ON workout.workout USING GIN (name gin_trgm_ops);
 
-CREATE INDEX IF NOT EXISTS idx_exercise_risk
-    ON exercises.exercise (overall_risk)
-    WHERE deleted_at IS NULL;
-
-CREATE INDEX IF NOT EXISTS idx_exercise_owner
-    ON exercises.exercise (owner_user_id)
-    WHERE owner_user_id IS NOT NULL AND deleted_at IS NULL;
-
-CREATE INDEX IF NOT EXISTS idx_exercise_visibility
-    ON exercises.exercise (visibility)
-    WHERE deleted_at IS NULL;
-
--- Trigram on canonical name for fast ILIKE / partial match
-CREATE INDEX IF NOT EXISTS idx_exercise_name_trgm
-    ON exercises.exercise USING GIN (name gin_trgm_ops);
-
--- GIN on full translations blob (covers all language searches)
-CREATE INDEX IF NOT EXISTS idx_exercise_translations_gin
-    ON exercises.exercise USING GIN (translations);
-
--- Optional: dedicated index on a primary language for hot path
-CREATE INDEX IF NOT EXISTS idx_exercise_name_it
-    ON exercises.exercise ((translations -> 'it' ->> 'name'))
-    WHERE deleted_at IS NULL;
-
-CREATE INDEX IF NOT EXISTS idx_exercise_name_en
-    ON exercises.exercise ((translations -> 'en' ->> 'name'))
-    WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_workout_translations_gin
+    ON workout.workout USING GIN (translations);
 
 -- ============================================================
--- Dictionary: muscle
+-- Table: workout_block
+-- ============================================================
+-- An ordered group of exercises. 1 entry = normal set.
+-- 2+ entries = superset (executed in sequence A→B→A→B).
+-- rest_seconds is the rest AFTER completing all sets of the block.
 -- ============================================================
 
-CREATE TABLE IF NOT EXISTS exercises.muscle (
-                                                id           UUID          PRIMARY KEY DEFAULT gen_random_uuid(),
-                                                code         VARCHAR(150)  NOT NULL UNIQUE,   -- e.g. pectoralis_major
-                                                group_code   VARCHAR(50)   NOT NULL,          -- e.g. chest, back, legs, shoulders, arms, core
-                                                status       exercises.record_status NOT NULL DEFAULT 'active',
-                                                deleted_at   TIMESTAMPTZ,
-                                                translations JSONB         NOT NULL DEFAULT '{}',
-                                                created_at   TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
-                                                updated_at   TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+CREATE TABLE IF NOT EXISTS workout.workout_block (
+                                                     id              UUID            PRIMARY KEY,  -- generated by client
+                                                     workout_id      UUID            NOT NULL REFERENCES workout.workout(id) ON DELETE CASCADE,
 
-                                                CONSTRAINT chk_muscle_code_nonempty  CHECK (LENGTH(TRIM(code)) > 0),
-                                                CONSTRAINT chk_muscle_group_nonempty CHECK (LENGTH(TRIM(group_code)) > 0)
+                                                     position        SMALLINT        NOT NULL,     -- order within the workout (0-based)
+                                                     label           VARCHAR(50),                  -- optional UI label, e.g. "A", "Superset 1"
+                                                     rest_seconds    SMALLINT,                     -- rest after completing all sets of this block
+                                                     notes           TEXT,
+
+                                                     created_at      TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
+                                                     updated_at      TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
+
+                                                     CONSTRAINT uq_workout_block_position UNIQUE (workout_id, position),
+                                                     CONSTRAINT chk_rest_seconds CHECK (rest_seconds IS NULL OR rest_seconds >= 0)
 );
 
-COMMENT ON TABLE  exercises.muscle IS
-    'Dictionary of muscles used for exercise targeting and UI filters.';
-COMMENT ON COLUMN exercises.muscle.code IS
-    'Stable snake_case identifier, e.g. pectoralis_major, biceps_brachii.';
-COMMENT ON COLUMN exercises.muscle.group_code IS
-    'Coarse group for UI filters; intentionally a plain string, not a table.';
-COMMENT ON COLUMN exercises.muscle.translations IS
-    'Per-language name/description: {"it": {"name": "Petto"}, "en": {"name": "Chest"}}.';
+COMMENT ON TABLE  workout.workout_block IS
+    'Ordered block within a workout. Holds one or more entries (superset if >1).';
+COMMENT ON COLUMN workout.workout_block.position IS
+    '0-based order within the workout. Client manages ordering.';
+COMMENT ON COLUMN workout.workout_block.rest_seconds IS
+    'Rest time after completing all sets of this block (seconds).';
 
-CREATE TRIGGER trg_muscle_set_updated_at
-    BEFORE UPDATE ON exercises.muscle
-    FOR EACH ROW EXECUTE FUNCTION exercises.tg_set_updated_at();
+CREATE TRIGGER trg_workout_block_set_updated_at
+    BEFORE UPDATE ON workout.workout_block
+    FOR EACH ROW EXECUTE FUNCTION workout.tg_set_updated_at();
 
-CREATE INDEX IF NOT EXISTS idx_muscle_group
-    ON exercises.muscle (group_code)
-    WHERE deleted_at IS NULL;
-
-CREATE INDEX IF NOT EXISTS idx_muscle_translations_gin
-    ON exercises.muscle USING GIN (translations);
+CREATE INDEX IF NOT EXISTS idx_workout_block_workout
+    ON workout.workout_block (workout_id);
 
 -- ============================================================
--- Dictionary: equipment
+-- Table: workout_block_entry
+-- ============================================================
+-- One exercise slot inside a block.
+-- Single entry = normal. Multiple entries = superset.
 -- ============================================================
 
-CREATE TABLE IF NOT EXISTS exercises.equipment (
-                                                   id           UUID          PRIMARY KEY DEFAULT gen_random_uuid(),
-                                                   code         VARCHAR(150)  NOT NULL UNIQUE,   -- e.g. barbell, bench, cable_machine
-                                                   category     VARCHAR(50)   NOT NULL,          -- e.g. barbell, dumbbell, machine, cable, bodyweight
-                                                   status       exercises.record_status NOT NULL DEFAULT 'active',
-                                                   deleted_at   TIMESTAMPTZ,
-                                                   translations JSONB         NOT NULL DEFAULT '{}',
-                                                   created_at   TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
-                                                   updated_at   TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+CREATE TABLE IF NOT EXISTS workout.workout_block_entry (
+                                                           id              UUID            PRIMARY KEY,  -- generated by client
+                                                           block_id        UUID            NOT NULL REFERENCES workout.workout_block(id) ON DELETE CASCADE,
 
-                                                   CONSTRAINT chk_equipment_code_nonempty     CHECK (LENGTH(TRIM(code)) > 0),
-                                                   CONSTRAINT chk_equipment_category_nonempty CHECK (LENGTH(TRIM(category)) > 0)
+                                                           exercise_id     UUID            NOT NULL,     -- opaque ref to catalog-service exercise
+                                                           position        SMALLINT        NOT NULL,     -- order within the block (superset order)
+
+                                                           created_at      TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
+                                                           updated_at      TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
+
+                                                           CONSTRAINT uq_block_entry_position UNIQUE (block_id, position)
 );
 
-COMMENT ON TABLE  exercises.equipment IS
-    'Dictionary of equipment items used for exercise requirements and filters.';
-COMMENT ON COLUMN exercises.equipment.code IS
-    'Stable snake_case identifier, e.g. barbell, dumbbells, pull_up_bar.';
-COMMENT ON COLUMN exercises.equipment.category IS
-    'Coarse category for UI filters; intentionally a plain string, not a table.';
-COMMENT ON COLUMN exercises.equipment.translations IS
-    'Per-language name/description.';
+COMMENT ON TABLE  workout.workout_block_entry IS
+    'One exercise slot inside a block. >1 entry in same block = superset.';
+COMMENT ON COLUMN workout.workout_block_entry.exercise_id IS
+    'Opaque external reference to exercises.exercise in catalog-service.';
+COMMENT ON COLUMN workout.workout_block_entry.position IS
+    '0-based order within the block. Defines superset sequence.';
 
-CREATE TRIGGER trg_equipment_set_updated_at
-    BEFORE UPDATE ON exercises.equipment
-    FOR EACH ROW EXECUTE FUNCTION exercises.tg_set_updated_at();
+CREATE TRIGGER trg_workout_block_entry_set_updated_at
+    BEFORE UPDATE ON workout.workout_block_entry
+    FOR EACH ROW EXECUTE FUNCTION workout.tg_set_updated_at();
 
-CREATE INDEX IF NOT EXISTS idx_equipment_category
-    ON exercises.equipment (category)
-    WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_workout_block_entry_block
+    ON workout.workout_block_entry (block_id);
 
-CREATE INDEX IF NOT EXISTS idx_equipment_translations_gin
-    ON exercises.equipment USING GIN (translations);
+CREATE INDEX IF NOT EXISTS idx_workout_block_entry_exercise
+    ON workout.workout_block_entry (exercise_id);
 
 -- ============================================================
--- Dictionary: tag
+-- Table: workout_set
+-- ============================================================
+-- A single planned set row for one entry.
+-- This is what the user sees in the template: "3x10 @ 80kg"
 -- ============================================================
 
-CREATE TABLE IF NOT EXISTS exercises.tag (
-                                             id           UUID          PRIMARY KEY DEFAULT gen_random_uuid(),
-                                             code         VARCHAR(150)  NOT NULL UNIQUE,  -- e.g. strength, hypertrophy, rehab
-                                             tag_type     VARCHAR(50),                    -- e.g. goal, style, rehab (grouping hint)
-                                             status       exercises.record_status NOT NULL DEFAULT 'active',
-                                             deleted_at   TIMESTAMPTZ,
-                                             translations JSONB         NOT NULL DEFAULT '{}',
-                                             created_at   TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
-                                             updated_at   TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+CREATE TABLE IF NOT EXISTS workout.workout_set (
+                                                   id              UUID            PRIMARY KEY,  -- generated by client
+                                                   entry_id        UUID            NOT NULL REFERENCES workout.workout_block_entry(id) ON DELETE CASCADE,
 
-                                             CONSTRAINT chk_tag_code_nonempty CHECK (LENGTH(TRIM(code)) > 0)
+                                                   position        SMALLINT        NOT NULL,     -- set number within the entry (0-based)
+                                                   set_type        workout.set_type  NOT NULL DEFAULT 'normal',
+
+                                                   reps            SMALLINT,                     -- planned reps (null = open / AMRAP)
+                                                   load            NUMERIC(6, 2),                -- planned load
+                                                   load_unit       workout.load_unit  NOT NULL DEFAULT 'kg',
+                                                   rest_seconds    SMALLINT,                     -- rest after THIS set (overrides block rest)
+
+                                                   notes           TEXT,
+
+                                                   created_at      TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
+                                                   updated_at      TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
+
+                                                   CONSTRAINT uq_workout_set_position     UNIQUE (entry_id, position),
+                                                   CONSTRAINT chk_workout_set_reps        CHECK (reps IS NULL OR reps > 0),
+                                                   CONSTRAINT chk_workout_set_load        CHECK (load IS NULL OR load >= 0),
+                                                   CONSTRAINT chk_workout_set_rest        CHECK (rest_seconds IS NULL OR rest_seconds >= 0)
 );
 
-COMMENT ON TABLE  exercises.tag IS
-    'Optional editorial tags for classification and filtering.';
-COMMENT ON COLUMN exercises.tag.tag_type IS
-    'Optional grouping hint (string); not normalized by design.';
-COMMENT ON COLUMN exercises.tag.translations IS
-    'Per-language name/description.';
+COMMENT ON TABLE  workout.workout_set IS
+    'A single planned set row within a workout entry. '
+        'Represents one "line" in the workout template (e.g. 3x10 @ 80kg).';
+COMMENT ON COLUMN workout.workout_set.reps IS
+    'Planned reps. NULL = open/AMRAP (use set_type=amrap to signal intent).';
+COMMENT ON COLUMN workout.workout_set.rest_seconds IS
+    'Rest after this specific set. If set, overrides the block-level rest_seconds.';
 
-CREATE TRIGGER trg_tag_set_updated_at
-    BEFORE UPDATE ON exercises.tag
-    FOR EACH ROW EXECUTE FUNCTION exercises.tg_set_updated_at();
+CREATE TRIGGER trg_workout_set_set_updated_at
+    BEFORE UPDATE ON workout.workout_set
+    FOR EACH ROW EXECUTE FUNCTION workout.tg_set_updated_at();
 
-CREATE INDEX IF NOT EXISTS idx_tag_type
-    ON exercises.tag (tag_type)
-    WHERE deleted_at IS NULL;
-
-CREATE INDEX IF NOT EXISTS idx_tag_translations_gin
-    ON exercises.tag USING GIN (translations);
+CREATE INDEX IF NOT EXISTS idx_workout_set_entry
+    ON workout.workout_set (entry_id);
 
 -- ============================================================
--- Dictionary: category  (flat for MVP — no parent_id tree)
+-- Table: workout_session
 -- ============================================================
--- To add hierarchy later: ALTER TABLE exercises.category
---     ADD COLUMN parent_id UUID REFERENCES exercises.category(id);
--- ============================================================
-
-CREATE TABLE IF NOT EXISTS exercises.category (
-                                                  id            UUID          PRIMARY KEY DEFAULT gen_random_uuid(),
-                                                  code          VARCHAR(150)  NOT NULL UNIQUE,  -- e.g. chest, back, legs, shoulders
-                                                  display_order INT           NOT NULL DEFAULT 0,
-                                                  status        exercises.record_status NOT NULL DEFAULT 'active',
-                                                  deleted_at    TIMESTAMPTZ,
-                                                  translations  JSONB         NOT NULL DEFAULT '{}',
-                                                  created_at    TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
-                                                  updated_at    TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
-
-                                                  CONSTRAINT chk_category_code_nonempty CHECK (LENGTH(TRIM(code)) > 0)
-);
-
-COMMENT ON TABLE  exercises.category IS
-    'Flat category list for browse/navigation (MVP). '
-        'Add parent_id column when hierarchical browsing is needed.';
-COMMENT ON COLUMN exercises.category.code IS
-    'Stable snake_case identifier, e.g. chest, upper_back, quadriceps.';
-COMMENT ON COLUMN exercises.category.display_order IS
-    'UI sort order.';
-COMMENT ON COLUMN exercises.category.translations IS
-    'Per-language name/description.';
-
-CREATE TRIGGER trg_category_set_updated_at
-    BEFORE UPDATE ON exercises.category
-    FOR EACH ROW EXECUTE FUNCTION exercises.tg_set_updated_at();
-
-CREATE INDEX IF NOT EXISTS idx_category_order
-    ON exercises.category (display_order)
-    WHERE deleted_at IS NULL;
-
-CREATE INDEX IF NOT EXISTS idx_category_translations_gin
-    ON exercises.category USING GIN (translations);
-
--- ============================================================
--- Mapping: exercise <-> muscle
--- ============================================================
-
-CREATE TABLE IF NOT EXISTS exercises.exercise_muscle (
-                                                         exercise_id           UUID  NOT NULL REFERENCES exercises.exercise(id)  ON DELETE CASCADE,
-                                                         muscle_id             UUID  NOT NULL REFERENCES exercises.muscle(id)    ON DELETE RESTRICT,
-                                                         involvement           exercises.involvement_level NOT NULL,
-                                                         activation_percentage INT,
-
-                                                         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-
-                                                         PRIMARY KEY (exercise_id, muscle_id, involvement),
-                                                         CONSTRAINT chk_activation_pct
-                                                             CHECK (activation_percentage IS NULL OR activation_percentage BETWEEN 0 AND 100)
-);
-
-COMMENT ON TABLE  exercises.exercise_muscle IS
-    'Many-to-many: exercise → muscle with involvement role.';
-COMMENT ON COLUMN exercises.exercise_muscle.activation_percentage IS
-    'Optional 0-100 activation estimate; NULL when not available.';
-
-CREATE INDEX IF NOT EXISTS idx_exercise_muscle_muscle
-    ON exercises.exercise_muscle (muscle_id);
-
-CREATE INDEX IF NOT EXISTS idx_exercise_muscle_exercise
-    ON exercises.exercise_muscle (exercise_id);
-
--- ============================================================
--- Mapping: exercise <-> equipment
--- ============================================================
-
-CREATE TABLE IF NOT EXISTS exercises.exercise_equipment (
-                                                            exercise_id    UUID    NOT NULL REFERENCES exercises.exercise(id)   ON DELETE CASCADE,
-                                                            equipment_id   UUID    NOT NULL REFERENCES exercises.equipment(id)  ON DELETE RESTRICT,
-                                                            required       BOOLEAN NOT NULL DEFAULT TRUE,   -- FALSE = optional/alternative
-                                                            is_primary     BOOLEAN NOT NULL DEFAULT TRUE,
-                                                            quantity_needed INT    NOT NULL DEFAULT 1,
-
-                                                            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-
-                                                            PRIMARY KEY (exercise_id, equipment_id),
-                                                            CONSTRAINT chk_quantity_needed CHECK (quantity_needed >= 1)
-);
-
-COMMENT ON TABLE  exercises.exercise_equipment IS
-    'Many-to-many: exercise → equipment with requirement flags.';
-COMMENT ON COLUMN exercises.exercise_equipment.required IS
-    'TRUE = required; FALSE = optional or alternative.';
-
-CREATE INDEX IF NOT EXISTS idx_exercise_equipment_equipment
-    ON exercises.exercise_equipment (equipment_id);
-
-CREATE INDEX IF NOT EXISTS idx_exercise_equipment_exercise
-    ON exercises.exercise_equipment (exercise_id);
-
--- ============================================================
--- Mapping: exercise <-> tag
--- ============================================================
-
-CREATE TABLE IF NOT EXISTS exercises.exercise_tag (
-                                                      exercise_id UUID NOT NULL REFERENCES exercises.exercise(id) ON DELETE CASCADE,
-                                                      tag_id      UUID NOT NULL REFERENCES exercises.tag(id)      ON DELETE RESTRICT,
-
-                                                      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-
-                                                      PRIMARY KEY (exercise_id, tag_id)
-);
-
-COMMENT ON TABLE exercises.exercise_tag IS
-    'Many-to-many: exercise → tag.';
-
-CREATE INDEX IF NOT EXISTS idx_exercise_tag_tag
-    ON exercises.exercise_tag (tag_id);
-
-CREATE INDEX IF NOT EXISTS idx_exercise_tag_exercise
-    ON exercises.exercise_tag (exercise_id);
-
--- ============================================================
--- Mapping: exercise <-> category
--- ============================================================
-
-CREATE TABLE IF NOT EXISTS exercises.exercise_category (
-                                                           exercise_id UUID    NOT NULL REFERENCES exercises.exercise(id)  ON DELETE CASCADE,
-                                                           category_id UUID    NOT NULL REFERENCES exercises.category(id)  ON DELETE RESTRICT,
-                                                           is_primary  BOOLEAN NOT NULL DEFAULT FALSE,
-
-                                                           created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-
-                                                           PRIMARY KEY (exercise_id, category_id)
-);
-
-COMMENT ON TABLE  exercises.exercise_category IS
-    'Many-to-many: exercise → category.';
-COMMENT ON COLUMN exercises.exercise_category.is_primary IS
-    'TRUE for the main category; an exercise may belong to multiple categories.';
-
-CREATE INDEX IF NOT EXISTS idx_exercise_category_category
-    ON exercises.exercise_category (category_id);
-
-CREATE INDEX IF NOT EXISTS idx_exercise_category_exercise
-    ON exercises.exercise_category (exercise_id);
-
--- ============================================================
--- Media
--- ============================================================
-
-CREATE TABLE IF NOT EXISTS exercises.exercise_media (
-                                                        id            UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-                                                        exercise_id   UUID        NOT NULL REFERENCES exercises.exercise(id) ON DELETE CASCADE,
-                                                        type          exercises.media_type    NOT NULL,
-                                                        purpose       exercises.media_purpose NOT NULL DEFAULT 'demo',
-                                                        url           TEXT        NOT NULL,
-                                                        thumbnail_url TEXT,
-                                                        view_angle    VARCHAR(50),           -- e.g. front, side, 45deg
-                                                        display_order INT         NOT NULL DEFAULT 0,
-                                                        is_primary    BOOLEAN     NOT NULL DEFAULT FALSE,
-                                                        visibility    exercises.visibility  NOT NULL DEFAULT 'public',
-
-                                                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-
-                                                        CONSTRAINT chk_media_url_nonempty CHECK (LENGTH(TRIM(url)) > 0)
-);
-
-COMMENT ON TABLE  exercises.exercise_media IS
-    'Media assets (images/videos) for exercises. Stores URLs to CDN/object storage only.';
-COMMENT ON COLUMN exercises.exercise_media.view_angle IS
-    'Camera angle for the asset, useful for form check comparisons.';
-
-CREATE INDEX IF NOT EXISTS idx_ex_media_exercise
-    ON exercises.exercise_media (exercise_id);
-
-CREATE INDEX IF NOT EXISTS idx_ex_media_primary
-    ON exercises.exercise_media (exercise_id, is_primary)
-    WHERE is_primary = TRUE;
-
-CREATE INDEX IF NOT EXISTS idx_ex_media_type
-    ON exercises.exercise_media (type);
-
--- ============================================================
--- Variations (links between exercises)
--- ============================================================
--- Optional for MVP: populate only when exercise data is rich enough.
--- variation_type is a free string by design (e.g. grip, incline, machine, tempo).
--- ============================================================
-
-CREATE TABLE IF NOT EXISTS exercises.exercise_variation (
-                                                            base_exercise_id    UUID         NOT NULL REFERENCES exercises.exercise(id) ON DELETE CASCADE,
-                                                            variant_exercise_id UUID         NOT NULL REFERENCES exercises.exercise(id) ON DELETE CASCADE,
-                                                            variation_type      VARCHAR(50)  NOT NULL,   -- free string: grip, incline, machine, unilateral…
-                                                            difficulty_delta    INT,                     -- signed: positive = harder, negative = easier
-
-                                                            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-
-                                                            PRIMARY KEY (base_exercise_id, variant_exercise_id, variation_type),
-                                                            CONSTRAINT chk_variation_not_self
-                                                                CHECK (base_exercise_id <> variant_exercise_id)
-);
-
-COMMENT ON TABLE  exercises.exercise_variation IS
-    'Directed relation: base exercise → variant. Optional for MVP.';
-COMMENT ON COLUMN exercises.exercise_variation.variation_type IS
-    'Free string describing the kind of variation; not normalized by design.';
-COMMENT ON COLUMN exercises.exercise_variation.difficulty_delta IS
-    'Signed difficulty offset vs base: positive = harder, negative = easier.';
-
-CREATE INDEX IF NOT EXISTS idx_ex_variation_variant
-    ON exercises.exercise_variation (variant_exercise_id);
-
-CREATE INDEX IF NOT EXISTS idx_ex_variation_base
-    ON exercises.exercise_variation (base_exercise_id);
-
--- ============================================================
--- Convenience view: active public exercises
--- ============================================================
-
-CREATE OR REPLACE VIEW exercises.v_exercise_active AS
-SELECT e.*
-FROM   exercises.exercise e
-WHERE  e.deleted_at IS NULL
-  AND  e.status     = 'active'
-  AND  e.visibility = 'public';
-
-COMMENT ON VIEW exercises.v_exercise_active IS
-    'Active, public, non-deleted exercises. Use for all user-facing catalog queries.';
-
--- ============================================================
--- Quick-reference: translations JSONB contract
--- ============================================================
--- Required key per supported language (ISO-639-1):
+-- The execution of a workout. Saved as a complete snapshot
+-- from the client (offline-first sync model).
 --
--- exercise.translations:
---   {
---     "<locale>": {
---       "name":          "string (required)",
---       "description":   "string (optional)",
---       "safety_notes":  "string (optional)",
---       "instructions": {
---         "setup":           ["string", ...],   -- optional
---         "execution":       ["string", ...],   -- recommended
---         "breathing":       ["string", ...],   -- optional
---         "common_mistakes": ["string", ...],   -- recommended
---         "tips":            ["string", ...]    -- optional
---       }
+-- snapshot JSONB contains the full denormalized session structure:
+-- {
+--   "workout_name": "...",
+--   "blocks": [
+--     {
+--       "source_block_id": "uuid|null",   -- null if added live
+--       "label": "A",
+--       "position": 0,
+--       "entries": [
+--         {
+--           "source_entry_id": "uuid|null",
+--           "exercise_id": "uuid",
+--           "exercise_name": "Panca Piana",  -- denormalized for offline display
+--           "position": 0,
+--           "sets": [
+--             {
+--               "source_set_id": "uuid|null",
+--               "position": 0,
+--               "set_type": "normal",
+--               "planned_reps": 10,
+--               "planned_load": 80.0,
+--               "load_unit": "kg",
+--               "actual_reps": 10,
+--               "actual_load": 82.5,
+--               "completed": true,
+--               "skipped": false,
+--               "rest_seconds": 90,
+--               "notes": "sentita bene"
+--             }
+--           ]
+--         }
+--       ]
 --     }
---   }
+--   ]
+-- }
 --
--- muscle / equipment / tag / category.translations:
---   {
---     "<locale>": {
---       "name":        "string (required)",
---       "description": "string (optional)"
---     }
---   }
---
--- Fallback strategy (application-side):
---   1. Requested locale  (e.g. "it")
---   2. Default locale    (e.g. "en")
---   3. First available   (any key present)
+-- source_*_id = null → set/entry/block added by user during the session
 -- ============================================================
+
+CREATE TABLE IF NOT EXISTS workout.workout_session (
+                                                       id                  UUID        PRIMARY KEY,  -- generated by client
+                                                       user_id             UUID        NOT NULL,     -- opaque ref to user-profile-be
+                                                       workout_id          UUID,                     -- opaque ref to source workout (null = free session)
+
+                                                       status              workout.session_status  NOT NULL DEFAULT 'in_progress',
+
+                                                       started_at          TIMESTAMPTZ NOT NULL,     -- set by client (offline-aware)
+                                                       ended_at            TIMESTAMPTZ,              -- set on complete/abandon
+                                                       duration_seconds    INT,                      -- client-computed total duration
+
+    -- Full denormalized session snapshot (see structure above)
+                                                       snapshot            JSONB       NOT NULL DEFAULT '{}',
+
+    -- Quick-access stats (extracted from snapshot at sync time, avoid full JSONB scan)
+                                                       total_sets          SMALLINT    NOT NULL DEFAULT 0,
+                                                       completed_sets      SMALLINT    NOT NULL DEFAULT 0,
+                                                       total_volume_kg     NUMERIC(10, 2),           -- sum(actual_reps * actual_load in kg)
+
+                                                       notes               TEXT,                     -- overall session notes
+
+                                                       synced_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),  -- last successful sync
+                                                       created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                                                       updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+                                                       CONSTRAINT chk_session_ended_after_started
+                                                           CHECK (ended_at IS NULL OR ended_at >= started_at),
+                                                       CONSTRAINT chk_session_duration
+                                                           CHECK (duration_seconds IS NULL OR duration_seconds >= 0),
+                                                       CONSTRAINT chk_completed_sets
+                                                           CHECK (completed_sets <= total_sets)
+);
+
+COMMENT ON TABLE  workout.workout_session IS
+    'Execution of a workout. Saved as a complete object from the client (offline-first). '
+        'Upsert on sync using client-generated UUID as idempotency key.';
+COMMENT ON COLUMN workout.workout_session.id IS
+    'UUID generated by the client before the session starts. '
+        'Used as idempotency key for upsert on sync.';
+COMMENT ON COLUMN workout.workout_session.workout_id IS
+    'Source workout template. NULL for free/unplanned sessions.';
+COMMENT ON COLUMN workout.workout_session.snapshot IS
+    'Full denormalized session structure. Contains all blocks, entries and sets '
+        'with planned vs actual values and completion flags. See table comment for structure.';
+COMMENT ON COLUMN workout.workout_session.total_sets IS
+    'Total sets in the session (extracted from snapshot at sync time).';
+COMMENT ON COLUMN workout.workout_session.completed_sets IS
+    'Completed sets (extracted from snapshot at sync time). Used for quick progress queries.';
+COMMENT ON COLUMN workout.workout_session.total_volume_kg IS
+    'Sum of (actual_reps * actual_load converted to kg) across all completed sets. '
+        'Pre-computed at sync time to avoid scanning the snapshot JSONB for stats queries.';
+COMMENT ON COLUMN workout.workout_session.synced_at IS
+    'Last time the client successfully synced this session. '
+        'Useful to detect stale or missing syncs.';
+COMMENT ON COLUMN workout.workout_session.started_at IS
+    'Session start timestamp as recorded by the client (not server time).';
+
+CREATE TRIGGER trg_workout_session_set_updated_at
+    BEFORE UPDATE ON workout.workout_session
+    FOR EACH ROW EXECUTE FUNCTION workout.tg_set_updated_at();
+
+-- Hot paths
+CREATE INDEX IF NOT EXISTS idx_session_user_started
+    ON workout.workout_session (user_id, started_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_session_workout
+    ON workout.workout_session (workout_id)
+    WHERE workout_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_session_status
+    ON workout.workout_session (status)
+    WHERE status = 'in_progress';
+
+-- GIN for JSONB queries (exercise_id lookups inside snapshot for PR computation)
+CREATE INDEX IF NOT EXISTS idx_session_snapshot_gin
+    ON workout.workout_session USING GIN (snapshot);
+
+-- ============================================================
+-- View: v_workout_full (workout with block/entry/set count)
+-- ============================================================
+
+CREATE OR REPLACE VIEW workout.v_workout_full AS
+SELECT
+    w.id,
+    w.user_id,
+    w.name,
+    w.translations,
+    w.status,
+    w.created_at,
+    w.updated_at,
+    COUNT(DISTINCT b.id)    AS block_count,
+    COUNT(DISTINCT e.id)    AS entry_count,
+    COUNT(DISTINCT s.id)    AS set_count
+FROM      workout.workout              w
+              LEFT JOIN workout.workout_block        b ON b.workout_id  = w.id
+              LEFT JOIN workout.workout_block_entry  e ON e.block_id    = b.id
+              LEFT JOIN workout.workout_set          s ON s.entry_id    = e.id
+WHERE w.deleted_at IS NULL
+GROUP BY w.id, w.user_id, w.name, w.translations, w.status, w.created_at, w.updated_at;
+
+COMMENT ON VIEW workout.v_workout_full IS
+    'Workout with aggregated block/entry/set counts. Use for list views.';
+
+-- ============================================================
+-- View: v_session_summary (per user stats)
+-- ============================================================
+
+CREATE OR REPLACE VIEW workout.v_session_summary AS
+SELECT
+    user_id,
+    COUNT(*)                                            AS total_sessions,
+    COUNT(*) FILTER (WHERE status = 'completed')        AS completed_sessions,
+    COUNT(*) FILTER (WHERE status = 'abandoned')        AS abandoned_sessions,
+    SUM(total_volume_kg)                                AS total_volume_kg,
+    SUM(duration_seconds)                               AS total_duration_seconds,
+    MAX(started_at)                                     AS last_session_at
+FROM workout.workout_session
+GROUP BY user_id;
+
+COMMENT ON VIEW workout.v_session_summary IS
+    'Aggregated session stats per user. Used for profile/dashboard.';
 
 -- ============================================================
 -- Table summary
 -- ============================================================
--- exercises.exercise            Core record (+ inlined safety fields)
--- exercises.muscle              Dictionary
--- exercises.equipment           Dictionary
--- exercises.tag                 Dictionary
--- exercises.category            Dictionary (flat, no tree for MVP)
--- exercises.exercise_muscle     Mapping (with involvement level)
--- exercises.exercise_equipment  Mapping (with required / primary flags)
--- exercises.exercise_tag        Mapping
--- exercises.exercise_category   Mapping
--- exercises.exercise_media      Media assets (URLs only)
--- exercises.exercise_variation  Variation links (optional, populate later)
--- ============================================================
--- Removed vs v1:
---   exercise_instruction  → content lives in translations JSONB
---   exercise_safety       → fields inlined into exercise table
---   category.parent_id    → add back when hierarchical browse is needed
+-- workout.workout               Template created by user (multilingua)
+-- workout.workout_block         Ordered block (1 entry = normal, N = superset)
+-- workout.workout_block_entry   Exercise slot inside a block
+-- workout.workout_set           Planned set row (reps, load, type, rest)
+-- workout.workout_session       Executed session (offline-first, snapshot JSONB)
+--
+-- Offline-first sync contract:
+--   - Client generates UUIDs for all entities before going offline
+--   - Sync = UPSERT on primary key (idempotent)
+--   - workout_session saved as a complete object (no partial row updates)
+--   - snapshot JSONB contains the full denormalized session
+--   - Quick-access stats (total_sets, completed_sets, total_volume_kg)
+--     extracted from snapshot at sync time by the service layer
+--
+-- Cross-service references (opaque UUIDs, no DB foreign keys):
+--   - workout.user_id           → user-profile-be
+--   - workout_session.user_id   → user-profile-be
+--   - workout_block_entry.exercise_id → catalog-service
+--   - snapshot[].entries[].exercise_id → catalog-service
 -- ============================================================
