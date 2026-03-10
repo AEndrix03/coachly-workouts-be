@@ -1,1 +1,1 @@
-# coachly-workouts-be
+# coachly-exercises-be
