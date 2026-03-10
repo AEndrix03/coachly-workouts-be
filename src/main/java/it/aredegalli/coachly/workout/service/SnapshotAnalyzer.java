@@ -17,7 +17,7 @@ import java.util.List;
  *
  * <p>Called at every sync to populate {@code total_sets},
  * {@code completed_sets} and {@code total_volume_kg} on the
- * {@link com.coachly.workout.model.WorkoutSession} entity.
+ * {@link it.aredegalli.coachly.workout.model.WorkoutSession} entity.
  *
  * <p>This avoids JSONB scans on every stats or dashboard query —
  * the extracted columns are indexed and queried directly.
@@ -101,8 +101,8 @@ public class SnapshotAnalyzer {
         }
 
         BigDecimal loadKg = switch (unit) {
-            case kg  -> set.getActualLoad();
-            case lbs -> set.getActualLoad().multiply(LBS_TO_KG).setScale(2, RoundingMode.HALF_UP);
+            case KG  -> set.getActualLoad();
+            case LBS -> set.getActualLoad().multiply(LBS_TO_KG).setScale(2, RoundingMode.HALF_UP);
             default  -> BigDecimal.ZERO;
         };
 

@@ -1,11 +1,12 @@
 package it.aredegalli.coachly.workout.model;
 
-import com.coachly.workout.model.enums.WorkoutStatus;
-import io.hypersistence.utils.hibernate.type.json.JsonBinaryType;
+import it.aredegalli.coachly.workout.enums.WorkoutStatus;
+import it.aredegalli.coachly.workout.model.converter.WorkoutStatusConverter;
 import jakarta.persistence.*;
 import lombok.*;
+import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.annotations.SQLRestriction;
-import org.hibernate.annotations.Type;
+import org.hibernate.type.SqlTypes;
 
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
@@ -67,11 +68,11 @@ public class Workout {
      * Per-language title and description.
      * Structure: {@code {"it": {"title": "...", "description": "..."}, "en": {...}}}
      */
-    @Type(JsonBinaryType.class)
+    @JdbcTypeCode(SqlTypes.JSON)
     @Column(name = "translations", nullable = false, columnDefinition = "jsonb")
     private String translations;
 
-    @Enumerated(EnumType.STRING)
+    @Convert(converter = WorkoutStatusConverter.class)
     @Column(name = "status", nullable = false, length = 20)
     private WorkoutStatus status;
 
@@ -104,7 +105,7 @@ public class Workout {
         this.createdAt = now;
         this.updatedAt = now;
         if (this.status == null) {
-            this.status = WorkoutStatus.active;
+            this.status = WorkoutStatus.ACTIVE;
         }
         if (this.translations == null) {
             this.translations = "{}";

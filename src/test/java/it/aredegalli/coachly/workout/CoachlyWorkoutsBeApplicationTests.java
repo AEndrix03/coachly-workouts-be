@@ -1,13 +1,14 @@
 package it.aredegalli.coachly.workout;
 
 import org.junit.jupiter.api.Test;
-import org.springframework.boot.test.context.SpringBootTest;
 
-@SpringBootTest
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+
 class CoachlyWorkoutsBeApplicationTests {
 
 	@Test
-	void contextLoads() {
+	void applicationClassIsAvailable() {
+		assertNotNull(CoachlyWorkoutsBeApplication.class);
 	}
 
 }

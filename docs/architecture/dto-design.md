@@ -24,4 +24,5 @@ Con MapStruct nel `pom.xml`, i mapper Entity <-> DTO devono ricostruire anche le
 - La compilazione usa `maven-compiler-plugin` con annotation processors espliciti.
 - Ordine raccomandato: `lombok`, `lombok-mapstruct-binding`, `mapstruct-processor`.
 - Il binding evita errori MapStruct su getter/setter/costruttori generati da Lombok durante l'annotation processing.
+- I campi JSONB delle entity usano il supporto nativo Hibernate (`@JdbcTypeCode(SqlTypes.JSON)`), senza dipendere da `hypersistence-utils`.
 - La serializzazione/deserializzazione del payload `snapshot` JSONB va centralizzata nel mapper di sessione e deve usare i DTO condivisi del `workouts-be-lib`.

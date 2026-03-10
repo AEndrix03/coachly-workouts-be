@@ -1,10 +1,11 @@
 package it.aredegalli.coachly.workout.model;
 
-import com.coachly.workout.model.enums.SessionStatus;
-import io.hypersistence.utils.hibernate.type.json.JsonBinaryType;
+import it.aredegalli.coachly.workout.enums.SessionStatus;
+import it.aredegalli.coachly.workout.model.converter.SessionStatusConverter;
 import jakarta.persistence.*;
 import lombok.*;
-import org.hibernate.annotations.Type;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 import java.math.BigDecimal;
 import java.time.OffsetDateTime;
@@ -101,7 +102,7 @@ public class WorkoutSession {
     @Column(name = "workout_id")
     private UUID workoutId;
 
-    @Enumerated(EnumType.STRING)
+    @Convert(converter = SessionStatusConverter.class)
     @Column(name = "status", nullable = false, length = 20)
     private SessionStatus status;
 
@@ -133,7 +134,7 @@ public class WorkoutSession {
      *
      * <p>Deserialized to {@code SessionSnapshotDto} at the service layer.
      */
-    @Type(JsonBinaryType.class)
+    @JdbcTypeCode(SqlTypes.JSON)
     @Column(name = "snapshot", nullable = false, columnDefinition = "jsonb")
     private String snapshot;
 
@@ -191,7 +192,7 @@ public class WorkoutSession {
             this.syncedAt = now;
         }
         if (this.status == null) {
-            this.status = SessionStatus.in_progress;
+            this.status = SessionStatus.IN_PROGRESS;
         }
         if (this.snapshot == null) {
             this.snapshot = "{}";

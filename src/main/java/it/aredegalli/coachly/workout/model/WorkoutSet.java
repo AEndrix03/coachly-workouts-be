@@ -1,7 +1,9 @@
 package it.aredegalli.coachly.workout.model;
 
-import com.coachly.workout.model.enums.LoadUnit;
-import com.coachly.workout.model.enums.SetType;
+import it.aredegalli.coachly.workout.enums.LoadUnit;
+import it.aredegalli.coachly.workout.enums.SetType;
+import it.aredegalli.coachly.workout.model.converter.LoadUnitConverter;
+import it.aredegalli.coachly.workout.model.converter.SetTypeConverter;
 import jakarta.persistence.*;
 import lombok.*;
 
@@ -62,9 +64,9 @@ public class WorkoutSet {
 
     /**
      * Execution type for this set.
-     * Defaults to {@link SetType#normal}.
+     * Defaults to {@link SetType#NORMAL}.
      */
-    @Enumerated(EnumType.STRING)
+    @Convert(converter = SetTypeConverter.class)
     @Column(name = "set_type", nullable = false, length = 20)
     private SetType setType;
 
@@ -87,7 +89,7 @@ public class WorkoutSet {
      * For {@code bodyweight}, {@code band} and {@code machine_notch}
      * the load value is typically null or used as a reference level.
      */
-    @Enumerated(EnumType.STRING)
+    @Convert(converter = LoadUnitConverter.class)
     @Column(name = "load_unit", nullable = false, length = 20)
     private LoadUnit loadUnit;
 
@@ -116,10 +118,10 @@ public class WorkoutSet {
         this.createdAt = now;
         this.updatedAt = now;
         if (this.setType == null) {
-            this.setType = SetType.normal;
+            this.setType = SetType.NORMAL;
         }
         if (this.loadUnit == null) {
-            this.loadUnit = LoadUnit.kg;
+            this.loadUnit = LoadUnit.KG;
         }
     }
 
