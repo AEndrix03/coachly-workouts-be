@@ -111,6 +111,7 @@ COMMENT ON COLUMN workout.workout.name IS
 COMMENT ON COLUMN workout.workout.translations IS
     'Per-language title and description: {"it": {"title": "...", "description": "..."}, ...}';
 
+DROP TRIGGER IF EXISTS trg_workout_set_updated_at ON workout.workout;
 CREATE TRIGGER trg_workout_set_updated_at
     BEFORE UPDATE ON workout.workout
     FOR EACH ROW EXECUTE FUNCTION workout.tg_set_updated_at();
@@ -156,6 +157,7 @@ COMMENT ON COLUMN workout.workout_block.position IS
 COMMENT ON COLUMN workout.workout_block.rest_seconds IS
     'Rest time after completing all sets of this block (seconds).';
 
+DROP TRIGGER IF EXISTS trg_workout_block_set_updated_at ON workout.workout_block;
 CREATE TRIGGER trg_workout_block_set_updated_at
     BEFORE UPDATE ON workout.workout_block
     FOR EACH ROW EXECUTE FUNCTION workout.tg_set_updated_at();
@@ -190,6 +192,7 @@ COMMENT ON COLUMN workout.workout_block_entry.exercise_id IS
 COMMENT ON COLUMN workout.workout_block_entry.position IS
     '0-based order within the block. Defines superset sequence.';
 
+DROP TRIGGER IF EXISTS trg_workout_block_entry_set_updated_at ON workout.workout_block_entry;
 CREATE TRIGGER trg_workout_block_entry_set_updated_at
     BEFORE UPDATE ON workout.workout_block_entry
     FOR EACH ROW EXECUTE FUNCTION workout.tg_set_updated_at();
@@ -238,6 +241,7 @@ COMMENT ON COLUMN workout.workout_set.reps IS
 COMMENT ON COLUMN workout.workout_set.rest_seconds IS
     'Rest after this specific set. If set, overrides the block-level rest_seconds.';
 
+DROP TRIGGER IF EXISTS trg_workout_set_set_updated_at ON workout.workout_set;
 CREATE TRIGGER trg_workout_set_set_updated_at
     BEFORE UPDATE ON workout.workout_set
     FOR EACH ROW EXECUTE FUNCTION workout.tg_set_updated_at();
@@ -347,6 +351,7 @@ COMMENT ON COLUMN workout.workout_session.synced_at IS
 COMMENT ON COLUMN workout.workout_session.started_at IS
     'Session start timestamp as recorded by the client (not server time).';
 
+DROP TRIGGER IF EXISTS trg_workout_session_set_updated_at ON workout.workout_session;
 CREATE TRIGGER trg_workout_session_set_updated_at
     BEFORE UPDATE ON workout.workout_session
     FOR EACH ROW EXECUTE FUNCTION workout.tg_set_updated_at();
