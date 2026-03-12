@@ -6,7 +6,6 @@ COPY mvnw pom.xml ./
 RUN chmod +x mvnw && ./mvnw -q -DskipTests dependency:go-offline
 
 COPY src/ src/
-COPY schema.sql ./
 RUN ./mvnw -q -DskipTests clean package
 
 FROM eclipse-temurin:25-jre
