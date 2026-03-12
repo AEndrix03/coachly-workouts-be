@@ -75,7 +75,14 @@
 			<version>${mapstruct.version}</version>
 		</dependency>
 
-		<!-- Exercises Lib -->
+		<!-- Common Lib -->
+		<dependency>
+			<groupId>it.aredegalli.coachly</groupId>
+			<artifactId>commons-be-lib</artifactId>
+			<version>0.0.1-SNAPSHOT</version>
+		</dependency>
+
+		<!-- Domain Libs -->
 		<dependency>
 			<groupId>it.aredegalli.coachly</groupId>
 			<artifactId>exercises-be-lib</artifactId>
