@@ -33,12 +33,11 @@ public class WorkoutService {
 
     private final WorkoutRepository workoutRepository;
     private final WorkoutMapper workoutMapper;
-    private final ObjectMapper objectMapper;
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
-    public WorkoutService(WorkoutRepository workoutRepository, WorkoutMapper workoutMapper, ObjectMapper objectMapper) {
+    public WorkoutService(WorkoutRepository workoutRepository, WorkoutMapper workoutMapper) {
         this.workoutRepository = workoutRepository;
         this.workoutMapper = workoutMapper;
-        this.objectMapper = objectMapper;
     }
 
     @Transactional(readOnly = true)
