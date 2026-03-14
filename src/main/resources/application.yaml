@@ -1,6 +1,8 @@
 spring:
   application:
     name: Coachly Workouts BE
+  mvc:
+    log-request-details: true
   threads:
     virtual:
       enabled: true
@@ -46,12 +48,14 @@ server:
 
 logging:
   level:
-    root: WARN
+    root: INFO
     org.springframework.security: DEBUG
-    org.hibernate.SQL: ERROR
-    org.hibernate.type.descriptor.sql: ERROR
-    it.aredegalli: TRACE
     org.springframework.web: DEBUG
+    org.springframework.web.servlet.DispatcherServlet: DEBUG
+    org.springframework.web.filter.CommonsRequestLoggingFilter: DEBUG
+    org.hibernate.SQL: INFO
+    org.hibernate.type.descriptor.sql: WARN
+    it.aredegalli: DEBUG
   pattern:
     console: "%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
     file: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
