@@ -13,5 +13,6 @@ public interface WorkoutRepository extends JpaRepository<Workout, UUID> {
     @EntityGraph(attributePaths = {"blocks", "blocks.entries", "blocks.entries.sets"})
     Optional<Workout> findByIdAndUserId(UUID id, UUID userId);
 
+    @EntityGraph(attributePaths = {"blocks", "blocks.entries", "blocks.entries.sets"})
     List<Workout> findAllByUserIdOrderByUpdatedAtDesc(UUID userId);
 }
