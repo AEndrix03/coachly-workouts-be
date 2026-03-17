@@ -6,6 +6,7 @@ import it.aredegalli.coachly.workout.model.converter.LoadUnitConverter;
 import it.aredegalli.coachly.workout.model.converter.SetTypeConverter;
 import jakarta.persistence.*;
 import lombok.*;
+import org.hibernate.annotations.ColumnTransformer;
 
 import java.math.BigDecimal;
 import java.time.OffsetDateTime;
@@ -67,6 +68,7 @@ public class WorkoutSet {
      * Defaults to {@link SetType#NORMAL}.
      */
     @Convert(converter = SetTypeConverter.class)
+    @ColumnTransformer(write = "?::workout.set_type")
     @Column(name = "set_type", nullable = false, length = 20)
     private SetType setType;
 
@@ -90,6 +92,7 @@ public class WorkoutSet {
      * the load value is typically null or used as a reference level.
      */
     @Convert(converter = LoadUnitConverter.class)
+    @ColumnTransformer(write = "?::workout.load_unit")
     @Column(name = "load_unit", nullable = false, length = 20)
     private LoadUnit loadUnit;
 

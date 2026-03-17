@@ -5,6 +5,7 @@ import it.aredegalli.coachly.workout.model.converter.WorkoutStatusConverter;
 import jakarta.persistence.*;
 import lombok.*;
 import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.annotations.ColumnTransformer;
 import org.hibernate.annotations.SQLRestriction;
 import org.hibernate.type.SqlTypes;
 
@@ -73,6 +74,7 @@ public class Workout {
     private String translations;
 
     @Convert(converter = WorkoutStatusConverter.class)
+    @ColumnTransformer(write = "?::workout.workout_status")
     @Column(name = "status", nullable = false, length = 20)
     private WorkoutStatus status;
 

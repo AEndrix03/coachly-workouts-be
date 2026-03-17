@@ -5,6 +5,7 @@ import it.aredegalli.coachly.workout.model.converter.SessionStatusConverter;
 import jakarta.persistence.*;
 import lombok.*;
 import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.annotations.ColumnTransformer;
 import org.hibernate.type.SqlTypes;
 
 import java.math.BigDecimal;
@@ -103,6 +104,7 @@ public class WorkoutSession {
     private UUID workoutId;
 
     @Convert(converter = SessionStatusConverter.class)
+    @ColumnTransformer(write = "?::workout.session_status")
     @Column(name = "status", nullable = false, length = 20)
     private SessionStatus status;
 
