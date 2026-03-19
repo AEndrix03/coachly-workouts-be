@@ -30,18 +30,16 @@ public class WorkoutSessionService {
     private final WorkoutSessionRepository workoutSessionRepository;
     private final WorkoutRepository workoutRepository;
     private final SnapshotAnalyzer snapshotAnalyzer;
-    private final ObjectMapper objectMapper;
+    private final ObjectMapper objectMapper = new ObjectMapper().findAndRegisterModules();
 
     public WorkoutSessionService(
         WorkoutSessionRepository workoutSessionRepository,
         WorkoutRepository workoutRepository,
-        SnapshotAnalyzer snapshotAnalyzer,
-        ObjectMapper objectMapper
+        SnapshotAnalyzer snapshotAnalyzer
     ) {
         this.workoutSessionRepository = workoutSessionRepository;
         this.workoutRepository = workoutRepository;
         this.snapshotAnalyzer = snapshotAnalyzer;
-        this.objectMapper = objectMapper;
     }
 
     @Transactional
