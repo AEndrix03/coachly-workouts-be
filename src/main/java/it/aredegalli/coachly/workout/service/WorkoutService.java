@@ -67,10 +67,15 @@ public class WorkoutService {
 
     @Transactional
     public WorkoutDto updateWorkout(UUID userId, UUID workoutId, WorkoutUpsertRequestDto request) {
-        workoutRepository.findByIdAndUserId(workoutId, userId)
+        Workout workout = workoutRepository.findByIdAndUserId(workoutId, userId)
             .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Workout not found"));
 
-        Workout workout = toEntity(request, userId, workoutId);
+        // Remove existing nested structure first to avoid unique constraint clashes
+        // on (workout_id, position) while replacing blocks in the same transaction.
+        workout.getBlocks().clear();
+        workoutRepository.flush();
+
+        applyRequestToWorkout(workout, request, userId, workoutId);
         return workoutMapper.toDto(workoutRepository.save(workout));
     }
 
@@ -78,19 +83,29 @@ public class WorkoutService {
         Workout workout = Workout.builder()
             .id(workoutId)
             .userId(userId)
-            .name(request.getName().trim())
-            .translations(serializeTranslations(request.getTranslations()))
-            .status(request.getStatus() == null ? WorkoutStatus.ACTIVE : request.getStatus())
             .blocks(new ArrayList<>())
             .build();
+        applyRequestToWorkout(workout, request, userId, workoutId);
+        return workout;
+    }
+
+    private void applyRequestToWorkout(
+        Workout workout,
+        WorkoutUpsertRequestDto request,
+        UUID userId,
+        UUID workoutId
+    ) {
+        workout.setId(workoutId);
+        workout.setUserId(userId);
+        workout.setName(request.getName().trim());
+        workout.setTranslations(serializeTranslations(request.getTranslations()));
+        workout.setStatus(request.getStatus() == null ? WorkoutStatus.ACTIVE : request.getStatus());
 
         List<WorkoutBlockUpsertRequestDto> requestedBlocks = request.getBlocks() == null ? List.of() : request.getBlocks();
         for (int blockIndex = 0; blockIndex < requestedBlocks.size(); blockIndex++) {
             WorkoutBlock block = toBlockEntity(requestedBlocks.get(blockIndex), blockIndex, workout);
             workout.getBlocks().add(block);
         }
-
-        return workout;
     }
 
     private WorkoutBlock toBlockEntity(WorkoutBlockUpsertRequestDto request, int blockIndex, Workout workout) {
