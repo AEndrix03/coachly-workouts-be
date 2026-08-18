@@ -4,16 +4,21 @@ WORKDIR /workspace
 # Build the exact shared contracts checked out beside the service. This avoids
 # deploying a stale remote SNAPSHOT when the API contract and service evolve
 # atomically.
+COPY services/coachly-workouts-be/.mvn/ /workspace/service/.mvn/
+COPY services/coachly-workouts-be/mvnw /workspace/service/mvnw
+RUN chmod +x /workspace/service/mvnw
+
 COPY services/libs/coachly-commons-be-lib /workspace/libs/coachly-commons-be-lib
-RUN cd /workspace/libs/coachly-commons-be-lib && mvn -q -DskipTests install
+RUN /workspace/service/mvnw -q -DskipTests \
+    -f /workspace/libs/coachly-commons-be-lib/pom.xml install
 
 COPY services/libs/coachly-workouts-be-lib /workspace/libs/coachly-workouts-be-lib
-RUN cd /workspace/libs/coachly-workouts-be-lib && mvn -q -DskipTests install
+RUN /workspace/service/mvnw -q -DskipTests \
+    -f /workspace/libs/coachly-workouts-be-lib/pom.xml install
 
-COPY services/coachly-workouts-be/.mvn/ /workspace/service/.mvn/
-COPY services/coachly-workouts-be/mvnw services/coachly-workouts-be/pom.xml /workspace/service/
+COPY services/coachly-workouts-be/pom.xml /workspace/service/
 WORKDIR /workspace/service
-RUN chmod +x mvnw && ./mvnw -q -DskipTests dependency:go-offline
+RUN ./mvnw -q -DskipTests dependency:go-offline
 
 COPY services/coachly-workouts-be/src/ /workspace/service/src/
 RUN ./mvnw -q -DskipTests clean package
