@@ -26,3 +26,11 @@ The extension therefore follows these compatibility rules:
 
 Database changes are additive and idempotent. They must be applied before a
 service build that validates the extended JPA model.
+
+## Deployment
+
+`deploy/deploy.py` is run from the Coachly aggregate checkout root. It reads
+database connection values from the existing workouts container, applies the
+idempotent migration, builds the checked-out commons/workouts contracts with
+`Dockerfile.deploy`, recreates only the workouts service and waits for the
+Actuator health status to become `UP`.
