@@ -1,6 +1,7 @@
 package it.aredegalli.coachly.workout.model;
 
 import it.aredegalli.coachly.workout.enums.LoadUnit;
+import it.aredegalli.coachly.workout.enums.IntensityType;
 import it.aredegalli.coachly.workout.enums.SetType;
 import it.aredegalli.coachly.workout.model.converter.LoadUnitConverter;
 import it.aredegalli.coachly.workout.model.converter.SetTypeConverter;
@@ -79,6 +80,25 @@ public class WorkoutSet {
     @Column(name = "reps")
     private Short reps;
 
+    @Column(name = "reps_min")
+    private Short repsMin;
+
+    @Column(name = "reps_max")
+    private Short repsMax;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "intensity_type", length = 20)
+    private IntensityType intensityType;
+
+    @Column(name = "intensity_min", precision = 6, scale = 2)
+    private BigDecimal intensityMin;
+
+    @Column(name = "intensity_max", precision = 6, scale = 2)
+    private BigDecimal intensityMax;
+
+    @Column(name = "relative_load_percent", precision = 6, scale = 2)
+    private BigDecimal relativeLoadPercent;
+
     /**
      * Planned load. Null for bodyweight/band/unloaded exercises.
      * Unit is defined by {@link #loadUnit}.
@@ -104,6 +124,15 @@ public class WorkoutSet {
     @Column(name = "rest_seconds")
     private Short restSeconds;
 
+    @Column(name = "tempo", length = 20)
+    private String tempo;
+
+    @Column(name = "pause_seconds")
+    private Short pauseSeconds;
+
+    @Column(name = "unilateral")
+    private Boolean unilateral;
+
     @Column(name = "notes")
     private String notes;
 
@@ -122,6 +151,9 @@ public class WorkoutSet {
         this.updatedAt = now;
         if (this.setType == null) {
             this.setType = SetType.NORMAL;
+        }
+        if (this.intensityType == null) {
+            this.intensityType = IntensityType.NONE;
         }
         if (this.loadUnit == null) {
             this.loadUnit = LoadUnit.KG;

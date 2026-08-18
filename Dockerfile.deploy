@@ -1,0 +1,40 @@
+FROM eclipse-temurin:25-jdk AS build
+WORKDIR /workspace
+
+# Build the exact shared contracts checked out beside the service. This avoids
+# deploying a stale remote SNAPSHOT when the API contract and service evolve
+# atomically.
+COPY services/coachly-workouts-be/.mvn/ /workspace/service/.mvn/
+COPY services/coachly-workouts-be/mvnw /workspace/service/mvnw
+RUN chmod +x /workspace/service/mvnw
+
+COPY services/libs/coachly-commons-be-lib /workspace/libs/coachly-commons-be-lib
+RUN /workspace/service/mvnw -q -DskipTests \
+    -f /workspace/libs/coachly-commons-be-lib/pom.xml install
+
+COPY services/libs/coachly-workouts-be-lib /workspace/libs/coachly-workouts-be-lib
+RUN /workspace/service/mvnw -q -DskipTests \
+    -f /workspace/libs/coachly-workouts-be-lib/pom.xml install
+
+COPY services/coachly-workouts-be/pom.xml /workspace/service/
+WORKDIR /workspace/service
+RUN ./mvnw -q -DskipTests dependency:go-offline
+
+COPY services/coachly-workouts-be/src/ /workspace/service/src/
+RUN ./mvnw -q -DskipTests clean package
+
+FROM eclipse-temurin:25-jre
+WORKDIR /app
+
+RUN useradd -r -u 10001 -g root spring
+COPY --from=build /workspace/service/target/*.jar /app/app.jar
+RUN chown -R spring:root /app
+USER spring
+
+EXPOSE 8080
+
+ENV SERVER_PORT=8080
+ENV SPRING_THREADS_VIRTUAL_ENABLED=true
+ENV JAVA_OPTS="-XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0 -XX:+ExitOnOutOfMemoryError"
+
+ENTRYPOINT ["sh", "-c", "java $JAVA_OPTS -Dspring.threads.virtual.enabled=${SPRING_THREADS_VIRTUAL_ENABLED} -jar /app/app.jar"]

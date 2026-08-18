@@ -9,8 +9,10 @@ import it.aredegalli.coachly.workout.dto.command.WorkoutSetUpsertRequestDto;
 import it.aredegalli.coachly.workout.dto.command.WorkoutTranslationDto;
 import it.aredegalli.coachly.workout.dto.command.WorkoutUpsertRequestDto;
 import it.aredegalli.coachly.workout.enums.LoadUnit;
+import it.aredegalli.coachly.workout.enums.IntensityType;
 import it.aredegalli.coachly.workout.enums.SetType;
 import it.aredegalli.coachly.workout.enums.WorkoutStatus;
+import it.aredegalli.coachly.workout.enums.WorkoutGroupType;
 import it.aredegalli.coachly.workout.mapper.WorkoutMapper;
 import it.aredegalli.coachly.workout.model.Workout;
 import it.aredegalli.coachly.workout.model.WorkoutBlock;
@@ -27,6 +29,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.HashSet;
 
 @Service
 public class WorkoutService {
@@ -109,11 +112,19 @@ public class WorkoutService {
     }
 
     private WorkoutBlock toBlockEntity(WorkoutBlockUpsertRequestDto request, int blockIndex, Workout workout) {
+        validateBlockRequest(request);
         WorkoutBlock block = WorkoutBlock.builder()
             .id(request.getId() == null ? UUID.randomUUID() : request.getId())
             .workout(workout)
             .position(positionOrIndex(request.getPosition(), blockIndex))
             .label(request.getLabel())
+            .sectionId(request.getSectionId())
+            .sectionPosition(request.getSectionPosition())
+            .sectionTitle(request.getSectionTitle())
+            .sectionKind(request.getSectionKind())
+            .groupType(request.getGroupType())
+            .rounds(request.getRounds())
+            .restBetweenExercisesSeconds(request.getRestBetweenExercisesSeconds())
             .restSeconds(request.getRestSeconds())
             .notes(request.getNotes())
             .entries(new ArrayList<>())
@@ -126,6 +137,27 @@ public class WorkoutService {
         }
 
         return block;
+    }
+
+    private void validateBlockRequest(WorkoutBlockUpsertRequestDto request) {
+        List<WorkoutBlockEntryUpsertRequestDto> entries = request.getEntries() == null
+            ? List.of()
+            : request.getEntries();
+        WorkoutGroupType type = request.getGroupType();
+
+        if (type == WorkoutGroupType.EXERCISE && entries.size() != 1) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "exercise blocks require exactly one entry");
+        }
+        if ((type == WorkoutGroupType.SUPERSET || type == WorkoutGroupType.CIRCUIT) && entries.size() < 2) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "exercise groups require at least two entries");
+        }
+
+        HashSet<UUID> instanceIds = new HashSet<>();
+        for (WorkoutBlockEntryUpsertRequestDto entry : entries) {
+            if (entry.getId() != null && !instanceIds.add(entry.getId())) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "an exercise instance cannot appear twice in a group");
+            }
+        }
     }
 
     private WorkoutBlockEntry toEntryEntity(WorkoutBlockEntryUpsertRequestDto request, int entryIndex, WorkoutBlock block) {
@@ -147,17 +179,44 @@ public class WorkoutService {
     }
 
     private WorkoutSet toSetEntity(WorkoutSetUpsertRequestDto request, int setIndex, WorkoutBlockEntry entry) {
+        validateSetRequest(request);
         return WorkoutSet.builder()
             .id(request.getId() == null ? UUID.randomUUID() : request.getId())
             .entry(entry)
             .position(positionOrIndex(request.getPosition(), setIndex))
             .setType(request.getSetType() == null ? SetType.NORMAL : request.getSetType())
             .reps(request.getReps())
+            .repsMin(request.getRepsMin())
+            .repsMax(request.getRepsMax())
+            .intensityType(request.getIntensityType() == null ? IntensityType.NONE : request.getIntensityType())
+            .intensityMin(request.getIntensityMin())
+            .intensityMax(request.getIntensityMax())
+            .relativeLoadPercent(request.getRelativeLoadPercent())
             .load(request.getLoad())
             .loadUnit(request.getLoadUnit() == null ? LoadUnit.KG : request.getLoadUnit())
             .restSeconds(request.getRestSeconds())
+            .tempo(request.getTempo())
+            .pauseSeconds(request.getPauseSeconds())
+            .unilateral(request.getUnilateral())
             .notes(request.getNotes())
             .build();
+    }
+
+    private void validateSetRequest(WorkoutSetUpsertRequestDto request) {
+        if (request.getRepsMin() != null && request.getRepsMax() != null
+            && request.getRepsMin() > request.getRepsMax()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "repsMin cannot be greater than repsMax");
+        }
+        if (request.getIntensityMin() != null && request.getIntensityMax() != null
+            && request.getIntensityMin().compareTo(request.getIntensityMax()) > 0) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "intensityMin cannot be greater than intensityMax");
+        }
+
+        IntensityType type = request.getIntensityType() == null ? IntensityType.NONE : request.getIntensityType();
+        if (type == IntensityType.NONE
+            && (request.getIntensityMin() != null || request.getIntensityMax() != null)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "intensity values require an intensityType");
+        }
     }
 
     private short positionOrIndex(Short value, int index) {

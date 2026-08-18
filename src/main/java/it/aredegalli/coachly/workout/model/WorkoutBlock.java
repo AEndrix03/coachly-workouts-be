@@ -1,5 +1,7 @@
 package it.aredegalli.coachly.workout.model;
 
+import it.aredegalli.coachly.workout.enums.WorkoutGroupType;
+import it.aredegalli.coachly.workout.enums.WorkoutSectionKind;
 import jakarta.persistence.*;
 import lombok.*;
 
@@ -61,6 +63,31 @@ public class WorkoutBlock {
      */
     @Column(name = "label", length = 50)
     private String label;
+
+    /** Stable optional section identity shared by adjacent blocks. */
+    @Column(name = "section_id")
+    private UUID sectionId;
+
+    @Column(name = "section_position")
+    private Short sectionPosition;
+
+    @Column(name = "section_title", length = 100)
+    private String sectionTitle;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "section_kind", length = 20)
+    private WorkoutSectionKind sectionKind;
+
+    /** Explicit semantics; null identifies a legacy block. */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "group_type", length = 20)
+    private WorkoutGroupType groupType;
+
+    @Column(name = "rounds")
+    private Short rounds;
+
+    @Column(name = "rest_between_exercises_seconds")
+    private Short restBetweenExercisesSeconds;
 
     /**
      * Rest time in seconds after completing all sets of this block.
