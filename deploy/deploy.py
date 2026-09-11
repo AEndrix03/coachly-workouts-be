@@ -31,26 +31,38 @@ def container_environment(root: pathlib.Path) -> dict[str, str]:
 
 
 def apply_migration(root: pathlib.Path) -> None:
+    """Applica in ordine tutte le migrazioni presenti.
+
+    Prima il file V2 era nominato a mano e aggiungerne uno nuovo significava
+    ricordarsi di toccare anche questo script — cioe' dimenticarsene. Le
+    migrazioni sono additive e idempotenti, quindi rieseguirle tutte a ogni
+    deploy e' sicuro e toglie di mezzo il passo che si salta.
+    """
     values = container_environment(root)
     jdbc_url = values["COACHLY_DB_URL"]
     postgres_url = jdbc_url.removeprefix("jdbc:")
     environment = os.environ.copy()
     environment["PGPASSWORD"] = values["COACHLY_DB_PASSWORD"]
-    run(
-        "psql",
-        postgres_url,
-        "--username",
-        values["COACHLY_DB_USERNAME"],
-        "--set",
-        "ON_ERROR_STOP=1",
-        "--file",
-        str(
-            root
-            / "services/coachly-workouts-be/deploy/migrations/V2__workout_programming.sql"
-        ),
-        cwd=root,
-        env=environment,
-    )
+
+    migrations_dir = root / "services/coachly-workouts-be/deploy/migrations"
+    migrations = sorted(migrations_dir.glob("V*__*.sql"))
+    if not migrations:
+        raise RuntimeError(f"No migration found in {migrations_dir}")
+
+    for migration in migrations:
+        print(f"==> {migration.name}")
+        run(
+            "psql",
+            postgres_url,
+            "--username",
+            values["COACHLY_DB_USERNAME"],
+            "--set",
+            "ON_ERROR_STOP=1",
+            "--file",
+            str(migration),
+            cwd=root,
+            env=environment,
+        )
 
 
 def wait_for_health() -> None:
