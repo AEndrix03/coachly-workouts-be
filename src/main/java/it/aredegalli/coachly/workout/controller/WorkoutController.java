@@ -6,12 +6,14 @@ import it.aredegalli.coachly.workout.dto.command.WorkoutUpsertRequestDto;
 import it.aredegalli.coachly.workout.service.WorkoutService;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 
@@ -48,6 +50,12 @@ public class WorkoutController {
     @PutMapping("/{workoutId}")
     public WorkoutDto updateWorkout(@PathVariable UUID workoutId, @Valid @RequestBody WorkoutUpsertRequestDto request) {
         return workoutService.updateWorkout(requireUserId(), workoutId, request);
+    }
+
+    @DeleteMapping("/{workoutId}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void deleteWorkout(@PathVariable UUID workoutId) {
+        workoutService.deleteWorkout(requireUserId(), workoutId);
     }
 
     private UUID requireUserId() {

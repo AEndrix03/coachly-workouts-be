@@ -17,11 +17,15 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import java.math.BigDecimal;
 
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -51,6 +55,34 @@ class WorkoutServiceTest {
         assertSame(workoutDtos, result);
         verify(workoutRepository).findAllByUserIdOrderByUpdatedAtDesc(userId);
         verify(workoutMapper).toDtoList(workouts);
+    }
+
+    @Test
+    void deleteWorkoutMarksRowAsDeletedInsteadOfRemovingIt() {
+        UUID userId = UUID.randomUUID();
+        UUID workoutId = UUID.randomUUID();
+        Workout workout = Workout.builder().id(workoutId).userId(userId).build();
+
+        when(workoutRepository.findByIdAndUserId(workoutId, userId)).thenReturn(Optional.of(workout));
+
+        workoutService.deleteWorkout(userId, workoutId);
+
+        assertNotNull(workout.getDeletedAt());
+        assertNotNull(workout.getUpdatedAt());
+        verify(workoutRepository).save(workout);
+        verify(workoutRepository, never()).delete(any(Workout.class));
+    }
+
+    @Test
+    void deleteWorkoutIsIdempotentWhenTheWorkoutIsNoLongerVisible() {
+        UUID userId = UUID.randomUUID();
+        UUID workoutId = UUID.randomUUID();
+
+        when(workoutRepository.findByIdAndUserId(workoutId, userId)).thenReturn(Optional.empty());
+
+        workoutService.deleteWorkout(userId, workoutId);
+
+        verify(workoutRepository, never()).save(any(Workout.class));
     }
 
     @Test

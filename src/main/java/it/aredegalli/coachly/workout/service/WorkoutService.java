@@ -24,6 +24,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -66,6 +67,27 @@ public class WorkoutService {
 
         Workout workout = toEntity(request, userId, workoutId);
         return workoutMapper.toDto(workoutRepository.save(workout));
+    }
+
+    /**
+     * Cancellazione logica: la riga resta, {@code deletedAt} la nasconde a
+     * ogni lettura successiva tramite la {@code @SQLRestriction} sull'entita'.
+     * Le sessioni gia' sincronizzate restano consultabili e nessun vincolo
+     * referenziale viene violato.
+     *
+     * <p>Idempotente per scelta: il client cancella attraverso una outbox che
+     * puo' ritentare la stessa riga dopo un invio andato a buon fine ma non
+     * registrato. Una scheda che non risulta piu' visibile e' gia' nello stato
+     * richiesto, quindi si risponde comunque senza errore.
+     */
+    @Transactional
+    public void deleteWorkout(UUID userId, UUID workoutId) {
+        workoutRepository.findByIdAndUserId(workoutId, userId).ifPresent(workout -> {
+            OffsetDateTime now = OffsetDateTime.now();
+            workout.setDeletedAt(now);
+            workout.setUpdatedAt(now);
+            workoutRepository.save(workout);
+        });
     }
 
     @Transactional
